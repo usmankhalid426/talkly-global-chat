@@ -4,3 +4,35 @@ CREATE TABLE IF NOT EXISTS messages (id BIGSERIAL PRIMARY KEY,match_id UUID NOT 
 CREATE TABLE IF NOT EXISTS reports (id BIGSERIAL PRIMARY KEY,reporter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,reported_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,match_id UUID REFERENCES matches(id) ON DELETE SET NULL,reason VARCHAR(500) NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS blocks (blocker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,blocked_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(blocker_id,blocked_id));
 CREATE INDEX IF NOT EXISTS messages_match_idx ON messages(match_id,created_at);CREATE INDEX IF NOT EXISTS users_last_seen_idx ON users(last_seen);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id BIGSERIAL PRIMARY KEY,
+  run_type VARCHAR(40) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  summary TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS content_ideas (
+  id BIGSERIAL PRIMARY KEY,
+  title VARCHAR(200) NOT NULL,
+  slug VARCHAR(160) NOT NULL UNIQUE,
+  keyword VARCHAR(200),
+  audience VARCHAR(120),
+  intent VARCHAR(80),
+  rationale TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'idea',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS content_drafts (
+  id BIGSERIAL PRIMARY KEY,
+  idea_id BIGINT REFERENCES content_ideas(id) ON DELETE SET NULL,
+  title VARCHAR(200) NOT NULL,
+  slug VARCHAR(160) NOT NULL UNIQUE,
+  description VARCHAR(320),
+  body TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'draft',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  published_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+CREATE INDEX IF NOT EXISTS content_ideas_status_idx ON content_ideas(status);
