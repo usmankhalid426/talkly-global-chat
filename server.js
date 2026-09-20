@@ -1,8 +1,8 @@
 require('dotenv').config();
 const express=require('express'),http=require('http'),path=require('path'),fs=require('fs'),helmet=require('helmet'),cors=require('cors'),rateLimit=require('express-rate-limit'),jwt=require('jsonwebtoken');
-const {Pool}=require('pg'),{Server}=require('socket.io'),{v4:uuidv4}=require('uuid');
+const {Pool}=require('pg'),{Server}=require('socket.io'),{v4:uuidv4}=require('uuid'),crypto=require('crypto');
 const {runGrowthAgent,draftIdea,SITE_URL,MODEL}=require('./agent');
-const PORT=Number(process.env.PORT||10000),JWT_SECRET=process.env.JWT_SECRET||'CHANGE_ME';
+const PORT=Number(process.env.PORT||10000),JWT_SECRET=process.env.JWT_SECRET||'CHANGE_ME',SITE_ORIGIN=process.env.SITE_URL||'https://talkly-global-chat1.onrender.com';
 if(JWT_SECRET==='CHANGE_ME')console.warn('Set JWT_SECRET before production.');
 const DATABASE_URL=process.env.DATABASE_URL;
 if(!DATABASE_URL) console.error('DATABASE_URL is missing. Talkly needs the Supabase/Postgres connection string in production.');
@@ -18,6 +18,44 @@ app.get('/api/agent/dashboard',agentAdmin,async(req,res)=>{try{const stats=(awai
 app.post('/api/agent/run',agentAdmin,async(req,res)=>{try{res.json(await runGrowthAgent(db))}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/agent/draft',agentAdmin,async(req,res)=>{try{const id=Number(req.body?.ideaId);const q=await db('SELECT id,title,slug,keyword,audience,intent,rationale FROM content_ideas WHERE id=$1',[id]);if(!q.rowCount)return res.status(404).json({error:'Idea not found'});const d=await draftIdea(q.rows[0]);const slug=String(q.rows[0].slug).slice(0,150);const saved=await db('INSERT INTO content_drafts(idea_id,title,slug,description,body,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(slug) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,body=EXCLUDED.body RETURNING id,title,slug,description,body,status',[id,String(d.title||q.rows[0].title).slice(0,200),slug,String(d.description||'').slice(0,320),String(d.body||''),'draft']);res.json(saved.rows[0])}catch(e){res.status(500).json({error:e.message})}});
 app.get('/api/health',async(q,r)=>{try{await db('SELECT 1');r.json({ok:true,service:'talkly',database:'connected'})}catch(e){r.status(503).json({ok:false,service:'talkly',database:'not_connected',error:process.env.NODE_ENV==='production'?'Database configuration error':e.message})}});
+app.get('/auth/google',async(req,res)=>{
+ const clientId=process.env.GOOGLE_CLIENT_ID,secret=process.env.GOOGLE_CLIENT_SECRET;
+ if(!clientId||!secret)return res.status(503).send('Google sign-in is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Render.');
+ const state=crypto.randomBytes(24).toString('hex');
+ res.setHeader('Set-Cookie','talkly_oauth_state='+state+'; HttpOnly; Secure; SameSite=Lax; Max-Age=600; Path=/');
+ const redirect=encodeURIComponent(SITE_ORIGIN+'/auth/google/callback');
+ res.redirect('https://accounts.google.com/o/oauth2/v2/auth?client_id='+encodeURIComponent(clientId)+'&redirect_uri='+redirect+'&response_type=code&scope='+encodeURIComponent('openid email profile')+'&state='+state+'&prompt=select_account');
+});
+app.get('/auth/google/callback',async(req,res)=>{
+ try{
+  const cookies=String(req.headers.cookie||'').split(';').reduce((a,x)=>{const i=x.indexOf('=');if(i>0)a[x.slice(0,i).trim()]=x.slice(i+1).trim();return a},{});
+  if(!req.query.code||!req.query.state||cookies.talkly_oauth_state!==req.query.state)return res.status(400).send('Invalid Google sign-in session. Please try again.');
+  const clientId=process.env.GOOGLE_CLIENT_ID,secret=process.env.GOOGLE_CLIENT_SECRET;
+  const body=new URLSearchParams({code:String(req.query.code),client_id:clientId,client_secret:secret,redirect_uri:SITE_ORIGIN+'/auth/google/callback',grant_type:'authorization_code'});
+  const tr=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+  if(!tr.ok)throw new Error('Google token exchange failed');
+  const td=await tr.json();
+  const gr=await fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:'Bearer '+td.access_token}});
+  if(!gr.ok)throw new Error('Google profile lookup failed');
+  const g=await gr.json(); if(!g.sub)throw new Error('Google account id missing');
+  let x=await db('SELECT u.id,u.name,u.age,u.country,u.language,u.interests,u.avatar FROM users u JOIN google_accounts ga ON ga.user_id=u.id WHERE ga.google_sub=$1',[g.sub]);
+  let user;
+  if(x.rowCount)user=x.rows[0]; else {
+   const id=uuidv4(),name=clean(g.name||g.email?.split('@')[0]||'Google User',40)||'Google User',avatar=clean(g.picture||'',500)||null;
+   await db('INSERT INTO users(id,name,avatar) VALUES($1,$2,$3)',[id,name,avatar]);
+   await db('INSERT INTO google_accounts(user_id,google_sub,email) VALUES($1,$2,$3)',[id,g.sub,clean(g.email||'',320)||null]);
+   user=(await db('SELECT id,name,age,country,language,interests,avatar FROM users WHERE id=$1',[id])).rows[0];
+  }
+  const token=jwt.sign({sub:user.id},JWT_SECRET,{expiresIn:'30d'});
+  res.redirect('/?google_token='+encodeURIComponent(token));
+ }catch(e){console.error('Google auth error:',e.message);res.status(500).send('Google sign-in failed. Please try again.');}
+});
+app.get('/api/profile/:id',auth,async(req,res)=>{const x=await db('SELECT id,name,age,country,language,interests,avatar,created_at FROM users WHERE id=$1',[req.params.id]);if(!x.rowCount)return res.status(404).json({error:'Profile not found'});res.json(x.rows[0])});
+app.get('/api/users/search',auth,async(req,res)=>{const q=clean(req.query.q,40);if(q.length<2)return res.json([]);const x=await db('SELECT id,name,age,country,language,interests,avatar FROM users WHERE id<>$1 AND name ILIKE $2 ORDER BY last_seen DESC LIMIT 20',[req.user.sub,'%'+q+'%']);res.json(x.rows)});
+app.get('/api/friends',auth,async(req,res)=>{const x=await db('SELECT f.requester_id,f.addressee_id,f.status,u.id,u.name,u.age,u.country,u.language,u.interests,u.avatar FROM friendships f JOIN users u ON u.id=CASE WHEN f.requester_id=$1 THEN f.addressee_id ELSE f.requester_id END WHERE f.requester_id=$1 OR f.addressee_id=$1 ORDER BY f.updated_at DESC',[req.user.sub]);res.json(x.rows)});
+app.post('/api/friends/request',auth,async(req,res)=>{const id=clean(req.body?.userId,60);if(!id||id===req.user.sub)return res.status(400).json({error:'Invalid friend'});const u=await db('SELECT id FROM users WHERE id=$1',[id]);if(!u.rowCount)return res.status(404).json({error:'User not found'});await db('INSERT INTO friendships(requester_id,addressee_id,status) VALUES($1,$2,$3) ON CONFLICT(requester_id,addressee_id) DO UPDATE SET status=EXCLUDED.status,updated_at=NOW()',[req.user.sub,id,'pending']);res.json({ok:true,status:'pending'})});
+app.post('/api/friends/respond',auth,async(req,res)=>{const id=clean(req.body?.userId,60),status=req.body?.status==='accepted'?'accepted':'declined';const x=await db('UPDATE friendships SET status=$1,updated_at=NOW() WHERE requester_id=$1 AND addressee_id=$2 RETURNING *',[status,id,req.user.sub]);if(!x.rowCount)return res.status(404).json({error:'Friend request not found'});res.json({ok:true,status})});
+app.delete('/api/friends/:id',auth,async(req,res)=>{await db('DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)',[req.user.sub,req.params.id]);res.json({ok:true})});
 app.post('/api/session',async(req,res)=>{if(!DATABASE_URL)return res.status(503).json({error:'Database is not configured. Add DATABASE_URL in the hosting environment.'});const id=uuidv4(),name=clean(req.body?.name||'Guest',40)||'Guest',avatar=clean(req.body?.avatar||'',500)||null;const x=await db('INSERT INTO users(id,name,avatar) VALUES($1,$2,$3) RETURNING id,name,age,country,language,interests,avatar',[id,name,avatar]);res.json({token:jwt.sign({sub:id},JWT_SECRET,{expiresIn:'30d'}),user:x.rows[0]})});
 app.get('/api/me',auth,async(req,res)=>{const x=await db('SELECT id,name,age,country,language,interests,avatar FROM users WHERE id=$1',[req.user.sub]);if(!x.rowCount)return res.status(404).json({error:'Not found'});res.json(x.rows[0])});
 app.patch('/api/me',auth,async(req,res)=>{const name=clean(req.body?.name,40)||'Guest',age=req.body?.age==null?null:Number(req.body.age),country=clean(req.body?.country,80)||null,language=clean(req.body?.language,80)||null,interests=Array.isArray(req.body?.interests)?req.body.interests.map(x=>clean(x,30)).filter(Boolean).slice(0,10):[],avatar=clean(req.body?.avatar,500)||null;if(age!==null&&(!Number.isInteger(age)||age<18||age>120))return res.status(400).json({error:'Invalid age'});const x=await db('UPDATE users SET name=$1,age=$2,country=$3,language=$4,interests=$5,avatar=$6,last_seen=NOW() WHERE id=$7 RETURNING id,name,age,country,language,interests,avatar',[name,age,country,language,interests,avatar,req.user.sub]);res.json(x.rows[0])});
