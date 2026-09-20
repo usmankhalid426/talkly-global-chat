@@ -39,3 +39,20 @@ CREATE INDEX IF NOT EXISTS content_ideas_status_idx ON content_ideas(status);
 
 CREATE TABLE IF NOT EXISTS gift_events (id BIGSERIAL PRIMARY KEY,match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,receiver_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,gift VARCHAR(80) NOT NULL,required_minutes SMALLINT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS gift_events_match_idx ON gift_events(match_id,created_at);
+
+CREATE TABLE IF NOT EXISTS google_accounts (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  google_sub VARCHAR(255) NOT NULL UNIQUE,
+  email VARCHAR(320),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS friendships (
+  requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  addressee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(requester_id,addressee_id),
+  CHECK(requester_id<>addressee_id)
+);
+CREATE INDEX IF NOT EXISTS friendships_addressee_idx ON friendships(addressee_id,status);
