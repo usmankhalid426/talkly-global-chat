@@ -36,3 +36,6 @@ CREATE TABLE IF NOT EXISTS content_drafts (
 );
 CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
 CREATE INDEX IF NOT EXISTS content_ideas_status_idx ON content_ideas(status);
+
+CREATE TABLE IF NOT EXISTS gift_events (id BIGSERIAL PRIMARY KEY,match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,receiver_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,gift VARCHAR(80) NOT NULL,required_minutes SMALLINT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS gift_events_match_idx ON gift_events(match_id,created_at);
