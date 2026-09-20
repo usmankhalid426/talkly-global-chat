@@ -56,3 +56,7 @@ CREATE TABLE IF NOT EXISTS friendships (
   CHECK(requester_id<>addressee_id)
 );
 CREATE INDEX IF NOT EXISTS friendships_addressee_idx ON friendships(addressee_id,status);
+
+CREATE TABLE IF NOT EXISTS google_accounts (user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, google_sub VARCHAR(255) NOT NULL UNIQUE, email VARCHAR(320), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS friendships (requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, addressee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, status VARCHAR(20) NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(requester_id,addressee_id), CHECK(requester_id<>addressee_id));
+CREATE INDEX IF NOT EXISTS friendships_addressee_idx ON friendships(addressee_id,status);
